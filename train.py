@@ -138,7 +138,6 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
             sample = to_gpu(sample, device)
             outputs, _ = model(**sample["net_input"])
             outputs = outputs.permute(0, 2, 1)
-            optimizer.zero_grad()
             loss = criterion(outputs, sample["targets"]).cpu()
             val_losses.append(loss.item())
             _, max_probs = torch.max(outputs, 1)
