@@ -1,0 +1,8 @@
+torch
+scikit-learn
+numpy
+pandas
+torchaudio==0.6.0
+wandb==0.10.4
+editdistance==0.3.1
+youtokentome==1.0.6
