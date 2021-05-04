@@ -115,7 +115,7 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
             loss = criterion(outputs, sample["targets"]).cpu()
             val_losses.append(loss.item())
             _, max_probs = torch.max(outputs, 1)
-            val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.T.cpu().numpy(),
+            val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.long().cpu().numpy(),
                                                                                            sample["targets"].cpu().numpy(),
                                                                                            sample["net_input"]["src_lengths"],
                                                                                            sample["target_lengths"])
