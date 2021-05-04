@@ -3,11 +3,12 @@ from src.dataset import prepare_bpe
 
 
 class CerWer():
-    def __init__(self, blank_index=0, space_simbol='▁'):
-        bpe = prepare_bpe()
-        self.idx2char = bpe.id_to_piece
+    def __init__(self, blank_index=0, space_simbol=' '):
+        self.bpe = prepare_bpe()
+        self.idx2char = self.bpe.id_to_piece
         self.blank_index = blank_index
         self.space_simbol = space_simbol
+        self.eos = 2
 
     def __call__(self, predicts, targets, inputs_length, targets_length):
         """
@@ -41,14 +42,10 @@ class CerWer():
         :param remove_repetitions: True for removing repetitions in predicted string
         :return: decoded string
         """
-        string = ''
-        for i in range(length):
-            char = self.idx2char(sequence[i])
-            if char != self.idx2char(self.blank_index):
-                if remove_repetitions and i != 0 and char == self.idx2char(sequence[i - 1]):
-                    pass
-                else:
-                    string = string + char
+        eos_pos = (sequence == self.eos).nonzero()[0]
+        eos = eos_pos[0] if len(eos_pos) > 0 else len(sequence)
+        ids = list(map(int, sequence[:eos]))
+        string = self.bpe.decode_ids(ids)
         return string
 
     def inference(self, predicts, input_len):
@@ -58,6 +55,6 @@ class CerWer():
         :return:
         """
         predict_string = self.process_string(predicts, input_len, remove_repetitions=True)
-        predict_words = predict_string.split('▁')
+        predict_words = predict_string.split('▁') # TODO: another space simbol
         return predict_words
 

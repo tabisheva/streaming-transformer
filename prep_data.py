@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import List, Optional
-from streaming_transformer.config import Params
+from config import Params
 import sentencepiece as sp
 import os
 

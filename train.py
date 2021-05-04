@@ -93,13 +93,13 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
         optimizer.step()
         lr_scheduler.step()
         train_losses.append(loss.item())
-        _, max_probs = torch.max(outputs, 2)
-        # train_epoch_cer, train_epoch_wer, train_decoded_words, train_target_words = cerwer(max_probs.T.cpu().numpy(),
-        #                                                                                    sample["targets"].cpu().numpy(),
-        #                                                                                    sample["net_input"]["src_lengths"],
-        #                                                                                    sample["target_lengths"])
-        # train_wer += train_epoch_wer
-        # train_cer += train_epoch_cer
+        _, max_probs = torch.max(outputs, 1)
+        train_epoch_cer, train_epoch_wer, train_decoded_words, train_target_words = cerwer(max_probs.long().cpu().numpy(),
+                                                                                           sample["targets"].cpu().numpy(),
+                                                                                           sample["net_input"]["src_lengths"],
+                                                                                           sample["target_lengths"])
+        train_wer += train_epoch_wer
+        train_cer += train_epoch_cer
         if (idx + 1) % 100 == 0:
             if Params.wandb_log:
                 wandb.log({"train_loss": loss.item()})
@@ -115,26 +115,24 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
             loss = criterion(outputs, sample["targets"]).cpu()
             val_losses.append(loss.item())
             _, max_probs = torch.max(outputs, 2)
-            # val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.T.cpu().numpy(),
-            #                                                                                sample["targets"].cpu().numpy(),
-            #                                                                                sample["net_input"]["src_lengths"],
-            #                                                                                sample["target_lengths"])
-            # val_wer += val_epoch_wer
-            # val_cer += val_epoch_cer
+            val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.T.cpu().numpy(),
+                                                                                           sample["targets"].cpu().numpy(),
+                                                                                           sample["net_input"]["src_lengths"],
+                                                                                           sample["target_lengths"])
+            val_wer += val_epoch_wer
+            val_cer += val_epoch_cer
+
     if Params.wandb_log:
-        wandb.log({"val_loss": np.mean(val_losses)})
-    # if Params.wandb_log:
-    #     wandb.log({"train_loss": np.mean(train_losses),
-    #                "val_wer": val_wer / len(test_dataset),
-    #                "train_cer": train_cer / len(train_dataset),
-    #                "val_loss": np.mean(val_losses),
-    #                "train_wer": train_wer / len(train_dataset),
-    #                "val_cer": val_cer / len(test_dataset),
-    #                "train_samples": wandb.Table(columns=["Target text", "Predicted text"],
-    #                                             data=[train_target_words, train_decoded_words]),
-    #                "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
-    #                                           data=[val_target_words, val_decoded_words]),
-    #                })
+        wandb.log({"val_wer": val_wer / len(test_dataset),
+                   "train_cer": train_cer / len(train_dataset),
+                   "val_loss": np.mean(val_losses),
+                   "train_wer": train_wer / len(train_dataset),
+                   "val_cer": val_cer / len(test_dataset),
+                   "train_samples": wandb.Table(columns=["Target text", "Predicted text"],
+                                                data=[train_target_words, train_decoded_words]),
+                   "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
+                                              data=[[val_target_words, val_decoded_words]]),
+                   })
 
     if (epoch % 5 == 0) and (epoch >= 10):
         torch.save(model.state_dict(), f"streaming_transformer{epoch}.pth")
