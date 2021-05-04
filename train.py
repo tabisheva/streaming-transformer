@@ -114,7 +114,7 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
             optimizer.zero_grad()
             loss = criterion(outputs, sample["targets"]).cpu()
             val_losses.append(loss.item())
-            _, max_probs = torch.max(outputs, 2)
+            _, max_probs = torch.max(outputs, 1)
             val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.T.cpu().numpy(),
                                                                                            sample["targets"].cpu().numpy(),
                                                                                            sample["net_input"]["src_lengths"],
@@ -129,10 +129,10 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    "train_wer": train_wer / len(train_dataset),
                    "val_cer": val_cer / len(test_dataset),
                    "train_samples": wandb.Table(columns=["Target text", "Predicted text"],
-                                                data=[train_target_words, train_decoded_words]),
+                                                data=[[train_target_words, train_decoded_words]]),
                    "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
                                               data=[[val_target_words, val_decoded_words]]),
                    })
 
-    if (epoch % 5 == 0) and (epoch >= 10):
+    if (epoch % 5 == 0) and (epoch > 10):
         torch.save(model.state_dict(), f"streaming_transformer{epoch}.pth")
