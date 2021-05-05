@@ -79,7 +79,7 @@ if Params.from_pretrained:
 model.to(device)
 criterion = nn.CrossEntropyLoss(ignore_index = 1)
 #optimizer = torch.optim.AdamW(model.parameters(), lr=Params.lr)
-optimizer = ScheduledOpt(Params.encoder_ffn_embed_dim, 4000, 
+optimizer = ScheduledOpt(Params.encoder_ffn_embed_dim, 8000, 
         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
 
 num_steps = len(train_dataloader) * Params.num_epochs
@@ -161,4 +161,4 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    })
 
     if (epoch % 5 == 0) and (epoch >= 10):
-        torch.save(model.state_dict(), f"streaming_transformer{epoch}.pth")
+        torch.save(model.state_dict(), f"streaming_transformer{epoch}_8000_dropout025.pth")

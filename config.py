@@ -8,23 +8,23 @@ class Params:
     original_sample_rate: int = 22050
     dataset: str = "LS"
     bpe_model: str = "vocabulary_LS.model" if dataset == "LS" else "vocabulary_LJ.model"
-    vocab_size: int = 10000
+    vocab_size: int = 1000
     time_masking: int = 1
     noise_variance: float = 0.01
-    batch_size: int = 8
+    batch_size: int = 16
     num_workers: int = 8
     lr: float = 0.002
     num_epochs: int = 10
     clip_grad_norm: float = 10.0
     wandb_name: str = "streaming-transformer"
     from_pretrained: bool = False
-    model_path: str = "left20_right20_segment100_epoch5.pth"
-    device: str = "cuda:3"
+    model_path: str = "streaming_transformer10.pth"
+    device: str = "cuda:4"
     start_epoch: int = 0
     wandb_log: bool = True
     segment_size: int = 100
-    left_context: int = 64
-    right_context: int = 64
+    left_context: int = 32
+    right_context: int = 32
     data: str = "/data/aotabisheva/data"
     config_yaml: str = "config.yaml"
     max_memory_size: int = -1
@@ -36,7 +36,7 @@ class Params:
     decoder_layers: int = 3
     encoder_layers: int = 6
     encoder_ffn_embed_dim: int = 1024
-    dropout: float = 0.1
+    dropout: float = 0.25
     seed: int = 221
 
 
