@@ -1,11 +1,13 @@
-torch
+torch==1.8.0
 scikit-learn
 numpy
 pandas
 hydra
 hydra-core
 sentencepiece
-torchaudio==0.6.0
+torchvision==0.9.0
+librosa
+torchaudio==0.8.0
 wandb==0.10.4
 editdistance==0.3.1
 youtokentome==1.0.6
