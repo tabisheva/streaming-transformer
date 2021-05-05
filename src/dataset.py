@@ -45,13 +45,33 @@ class LJDataset(Dataset):
         text = np.array(self.bpe.encode_as_ids(text))
         wav, sr = torchaudio.load(os.path.join(self.dir, f'{filename}.wav'))
         wav = wav.squeeze()
-        try:
-            input = self.transform(wav)
-        except:
-            print(filename, self.labels[idx], self.transform, type(self.transform))
-            raise Exception("pipa")
+        input = self.transform(wav)
         len_input = input.shape[1]
         return input.T, len_input, torch.Tensor(text), len(text)
 
     def __len__(self):
         return len(self.filenames)
+
+
+class LibriSpeechDataset(Dataset):
+    def __init__(self, mode="train", transform=None):
+        self.dir = "data/LibriSpeech/"
+        self.filenames = df.index.values
+        self.labels = df[2].values
+        self.transform = transform
+        self.bpe = prepare_bpe()
+
+    def __getitem__(self, idx):
+        filename = self.filenames[idx]
+        text = self.labels[idx].lower().strip().translate(str.maketrans('', '', PUNCTUATION))
+        text = np.array(self.bpe.encode_as_ids(text))
+        wav, sr = torchaudio.load(os.path.join(self.dir, f'{filename}.wav'))
+        wav = wav.squeeze()
+        input = self.transform(wav)
+        len_input = input.shape[1]
+        return input.T, len_input, torch.Tensor(text), len(text)
+
+    def __len__(self):
+        return len(self.filenames)
+
+
