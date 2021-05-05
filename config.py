@@ -6,7 +6,8 @@ class Params:
     min_shift: int = -3
     max_shift: int = 3
     original_sample_rate: int = 22050
-    bpe_model: str = "vocabulary_LJ.model"
+    dataset: str = "LS"
+    bpe_model: str = "vocabulary_LS.model" if dataset == "LS" else "vocabulary_LJ.model"
     vocab_size: int = 10000
     time_masking: int = 1
     noise_variance: float = 0.01
