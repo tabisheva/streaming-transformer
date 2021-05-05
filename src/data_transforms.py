@@ -104,9 +104,9 @@ class NormalizePerFeature(object):
 
 transforms = {
     'train': transforms.Compose([
-        # AddNormalNoise(),
-        # PitchShifting(),
-        # TimeStretch(),
+        AddNormalNoise(),
+        PitchShifting(),
+        TimeStretch(),
         MelSpectrogram(MelSpectrogramConfig),
         NormalizePerFeature(),
         torchaudio.transforms.TimeMasking(Params.time_masking, True),

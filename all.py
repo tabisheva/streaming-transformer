@@ -3961,7 +3961,11 @@ class AugmentedMemoryTransformerEncoderLayer(TransformerEncoderLayer):
         return x
 
     def build_self_attention(self, embed_dim, args):
-        return AugmentedMemoryMultiheadAttention(
+        if args.linear_attention:
+            module = AugmentedMemoryMultiheadLinearAttention
+        else:
+            module = AugmentedMemoryMultiheadAttention
+        return module(
             embed_dim=embed_dim,
             num_heads=args.encoder_attention_heads,
             dropout=args.attention_dropout,
@@ -4451,6 +4455,62 @@ class MultiheadAttention(nn.Module):
             state_dict[key] = value
 
 
+class FeatureMap(nn.Module):
+    """Define the FeatureMap interface."""
+    def __init__(self, query_dims):
+        super().__init__()
+        self.query_dims = query_dims
+
+    def new_feature_map(self, device):
+        """Create a new instance of this feature map. In particular, if it is a
+        random feature map sample new parameters."""
+        raise NotImplementedError()
+
+    def forward_queries(self, x):
+        """Encode the queries `x` using this feature map."""
+        return self(x)
+
+    def forward_keys(self, x):
+        """Encode the keys `x` using this feature map."""
+        return self(x)
+
+    def forward(self, x):
+        """Encode x using this feature map. For symmetric feature maps it
+        suffices to define this function, but for asymmetric feature maps one
+        needs to define the `forward_queries` and `forward_keys` functions."""
+        raise NotImplementedError()
+
+    @classmethod
+    def factory(cls, *args, **kwargs):
+        """Return a function that when called with the query dimensions returns
+        an instance of this feature map.
+        It is inherited by the subclasses so it is available in all feature
+        maps.
+        """
+        def inner(query_dims):
+            return cls(query_dims, *args, **kwargs)
+        return inner
+
+
+class ActivationFunctionFeatureMap(FeatureMap):
+    """Define a feature map that is simply an element-wise activation
+    function."""
+    def __init__(self, query_dims, activation_function):
+        super().__init__(query_dims)
+        self.activation_function = activation_function
+
+    def new_feature_map(self, device):
+        return
+
+    def forward(self, x):
+        return self.activation_function(x)
+
+
+elu_feature_map = ActivationFunctionFeatureMap.factory(
+    lambda x: torch.nn.functional.elu(x) + 1
+)
+
+
 class AugmentedMemoryMultiheadAttention(MultiheadAttention):
     """
     Augmented Memory Attention from
@@ -4617,6 +4677,134 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
         """
         attention_weight[:, -1, :mem_size] = float("-inf")
         return attention_weight
+
+
+class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
+    """
+    Augmented Memory Attention from
+    Streaming Transformer-based Acoustic Models
+    Using Self-attention with Augmented Memory
+    https://arxiv.org/abs/2005.08042
+    """
+
+    def __init__(
+            self,
+            embed_dim,
+            num_heads,
+            kdim=None,
+            vdim=None,
+            dropout=0.0,
+            bias=True,
+            add_bias_kv=False,
+            add_zero_attn=False,
+            self_attention=False,
+            encoder_decoder_attention=False,
+            q_noise=0.0,
+            qn_block_size=8,
+            tanh_on_mem=False,
+            memory_dim=None,
+            std_scale=0.5,  # 0.5 based on https://arxiv.org/abs/2005.09137
+            max_memory_size=-1,
+            disable_mem_on_mem_attn=True,
+    ):
+        super().__init__(
+            embed_dim,
+            num_heads,
+            kdim,
+            vdim,
+            dropout,
+            bias,
+            add_bias_kv,
+            add_zero_attn,
+            self_attention,
+            encoder_decoder_attention,
+            q_noise,
+            qn_block_size,
+        )
+
+        self.memory_dim = memory_dim if memory_dim is not None else embed_dim
+        self.std_scale = std_scale
+        self.disable_mem_on_mem_attn = disable_mem_on_mem_attn
+
+        # This Operator was used for factorization in PySpeech
+        self.v2e = lambda x: x
+
+        if tanh_on_mem:
+            self.squash_mem = torch.tanh
+            self.nonlinear_squash_mem = True
+        else:
+            self.squash_mem = lambda x: x
+            self.nonlinear_squash_mem = False
+
+        self.max_memory_size = max_memory_size
+
+        self.feature_map = (
+            elu_feature_map(embed_dim)
+        )
+
+    def forward(self, input_and_summary, state):
+        """
+        input: Encoder states of current segment with left or right context,
+            plus one summarization query
+        """
+
+        length, batch_size, _ = input_and_summary.shape
+        length = length - 1  # not include sum_query, last index
+
+        memory = state["memory_banks"]
+        # TODO: positional embedding on memory
+
+        if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
+            # TODO: need to fix here
+            if self.max_memory_size == 0:
+                memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
+            else:
+                memory = memory[-self.max_memory_size:]
+
+        memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
+        input_and_sum_query = input_and_summary
+
+        Q_segment = self.feature_map.forward_queries(input_and_summary[:-1])
+        Q_summary = self.feature_map.forward_queries(input_and_summary[-1])
+
+        K_full = self.feature_map.forward_keys(memory_and_input)
+        K_segment = self.feature_map.forward_keys(input_and_summary[:-1])
+        #        K = K * key_lengths.float_matrix[:, :, None, None]
+
+        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, input_and_summary[:-1])
+        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, memory_and_input)
+
+        # Compute the normalizer
+        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, KV_full.sum(dim=1)) + self.eps)
+        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, KV_segment.sum(dim=1)) + self.eps)
+
+        # Finally compute and return the new values
+        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full)
+        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory)
+
+        # return V.contiguous()
+
+        assert list(attention.shape) == [
+            batch_size * self.num_heads,
+            length + 1,
+            self.head_dim,
+        ]
+
+        attention = (
+            attention.transpose(0, 1)
+                .contiguous()
+                .view(length + 1, batch_size, self.embed_dim)
+        )
+
+        output_and_memory = self.out_proj(attention)
+
+        next_m = output_and_memory[-1:]
+        next_m = self.squash_mem(next_m)
+        output = output_and_memory[:-1]
+
+        state["memory_banks"].append(next_m)
+
+        return output
 
 
 class SequenceEncoder(FairseqEncoder):

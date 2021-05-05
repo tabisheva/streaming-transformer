@@ -56,9 +56,9 @@ class LJDataset(Dataset):
 class LibriSpeechDataset(Dataset):
     def __init__(self, mode="train", transform=None):
         if mode == "train":
-            self.dir = "data/aotabisheva/data/libri/train-wav"
+            self.dir = "/data/aotabisheva/data/libri/train-wav"
         else:
-            self.dir = "data/aotabisheva/data/libri/test-wav"
+            self.dir = "/data/aotabisheva/data/libri/test-wav"
         self.filenames_dir = os.path.join(self.dir, "metadata.txt")
         self.labels = []
         self.filenames = []
@@ -68,7 +68,7 @@ class LibriSpeechDataset(Dataset):
                 self.labels.append(text.strip().lower())
                 self.filenames.append(name.strip())
         self.transform = transform
-        self.bpe = prepare_bpe("data/aotabisheva/data/libri/train-wav")
+        self.bpe = prepare_bpe("/data/aotabisheva/data/libri/train-wav")
 
     def __getitem__(self, idx):
         filename = self.filenames[idx]

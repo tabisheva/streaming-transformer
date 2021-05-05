@@ -2,6 +2,9 @@ torch
 scikit-learn
 numpy
 pandas
+hydra
+hydra-core
+sentencepiece
 torchaudio==0.6.0
 wandb==0.10.4
 editdistance==0.3.1

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import pandas as pd
-from src.dataset import LJDataset
+from src.dataset import LJDataset, LibriSpeechDataset
 from config import Params
 from src.decoder import CerWer
 from src.data_transforms import transforms, collate_fn
@@ -43,12 +43,15 @@ class ScheduledOpt:
 torch.manual_seed(24)
 if torch.cuda.is_available():
         torch.cuda.manual_seed_all(24)
+if Params.dataset != "LS":
+    df = pd.read_csv("data/LJSpeech-1.1/metadata.csv", sep='|', quotechar='`', index_col=0, header=None)
+    train, test = train_test_split(df, test_size=0.2, random_state=10)
 
-df = pd.read_csv("data/LJSpeech-1.1/metadata.csv", sep='|', quotechar='`', index_col=0, header=None)
-train, test = train_test_split(df, test_size=0.2, random_state=10)
-
-train_dataset = LJDataset(train, transform=transforms['train'])
-test_dataset = LJDataset(test, transform=transforms['test'])
+    train_dataset = LJDataset(train, transform=transforms['train'])
+    test_dataset = LJDataset(test, transform=transforms['test'])
+else:
+    train_dataset = LibriSpeechDataset(mode="train", transform=transforms['train'])
+    test_dataset = LibriSpeechDataset(mode="test", transform=transforms['test'])
 
 train_dataloader = DataLoader(train_dataset,
                               batch_size=Params.batch_size,
@@ -84,7 +87,7 @@ optimizer = ScheduledOpt(Params.encoder_ffn_embed_dim, 8000,
 
 num_steps = len(train_dataloader) * Params.num_epochs
 #lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min=0.00001)
-cerwer = CerWer()
+cerwer = CerWer("/data/aotabisheva/data/libri/train-wav")
 
 if Params.wandb_log:
     wandb.init(project=Params.wandb_name)
@@ -161,4 +164,4 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    })
 
     if (epoch % 5 == 0) and (epoch >= 10):
-        torch.save(model.state_dict(), f"streaming_transformer{epoch}_8000_dropout025.pth")
+        torch.save(model.state_dict(), f"streaming_transformer{epoch}libri.pth")

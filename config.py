@@ -11,17 +11,17 @@ class Params:
     vocab_size: int = 1000
     time_masking: int = 1
     noise_variance: float = 0.01
-    batch_size: int = 16
+    batch_size: int = 8
     num_workers: int = 8
     lr: float = 0.002
     num_epochs: int = 10
     clip_grad_norm: float = 10.0
     wandb_name: str = "streaming-transformer"
     from_pretrained: bool = False
-    model_path: str = "streaming_transformer10.pth"
-    device: str = "cuda:4"
+    model_path: str = "left20_right20_segment100_epoch5.pth"
+    device: str = "cpu"
     start_epoch: int = 0
-    wandb_log: bool = True
+    wandb_log: bool = False
     segment_size: int = 100
     left_context: int = 32
     right_context: int = 32
@@ -38,6 +38,7 @@ class Params:
     encoder_ffn_embed_dim: int = 1024
     dropout: float = 0.25
     seed: int = 221
+    linear_attention: bool = True
 
 
 class MelSpectrogramConfig:
