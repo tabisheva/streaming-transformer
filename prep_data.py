@@ -6,7 +6,7 @@ import os
 
 
 DATA_ROOT = "../data/LJSpeech-1.1"
-
+DATA_ROOT = "/data/aotabisheva/data/libri/train-wav"
 
 UNK_TOKEN, UNK_TOKEN_ID = "<unk>", 3
 BOS_TOKEN, BOS_TOKEN_ID = "<s>", 0
@@ -60,6 +60,14 @@ def main():
         for line in meta.readlines():
             source.write(line.split('|')[2] + "\n")
     gen_vocab(Path(os.path.join(DATA_ROOT, "text_for_dict")), Path("vocabulary_LJ"), vocab_size=Params.vocab_size)
+
+
+def main():
+    with open(os.path.join(DATA_ROOT, "metadata.txt"), "r") as meta, open(os.path.join(DATA_ROOT, "text_for_dict"), "w") as source:
+        for line in meta.readlines():
+            _, text = line.strip().lower().split(" ", 1)
+            source.write(text + "\n")
+    gen_vocab(Path(os.path.join(DATA_ROOT, "text_for_dict")), Path("vocabulary_LS"), vocab_size=Params.vocab_size)
 
 
 if __name__=="__main__":
