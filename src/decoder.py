@@ -3,8 +3,8 @@ from src.dataset import prepare_bpe
 
 
 class CerWer():
-    def __init__(self, blank_index=0, space_simbol=' '):
-        self.bpe = prepare_bpe()
+    def __init__(self, bpe_path, blank_index=0, space_simbol=' '):
+        self.bpe = prepare_bpe(bpe_path)
         self.idx2char = self.bpe.id_to_piece
         self.blank_index = blank_index
         self.space_simbol = space_simbol
