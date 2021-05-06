@@ -5,7 +5,6 @@ class Params:
     sample_rate: int = 16000
     min_shift: int = -3
     max_shift: int = 3
-    original_sample_rate: int = 22050
     dataset: str = "LS"
     bpe_model: str = "vocabulary_LS.model" if dataset == "LS" else "vocabulary_LJ.model"
     vocab_size: int = 1000
@@ -42,7 +41,7 @@ class Params:
 
 
 class MelSpectrogramConfig:
-    sr: int = 22050
+    sr: int = 16000
     win_length: int = 1024
     hop_length: int = 256
     n_fft: int = 1024
