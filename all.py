@@ -3915,7 +3915,7 @@ class AugmentedMemoryTransformerEncoderLayer(TransformerEncoderLayer):
         self.left_context = args.left_context // args.encoder_stride
         self.right_context = args.right_context // args.encoder_stride
 
-    def forward(self, x, state):
+    def forward(self, x, state, **kwargs):
 
         length, batch_size, x_dim = x.size()
 
@@ -4034,6 +4034,10 @@ class MultiheadAttention(nn.Module):
         )
 
         self.out_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+
+        self.out_proj_mem = quant_noise(
             nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
         )
 
@@ -4769,7 +4773,12 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
 
         K_full = self.feature_map.forward_keys(memory_and_input)
         K_segment = self.feature_map.forward_keys(input_and_summary[:-1])
-        #        K = K * key_lengths.float_matrix[:, :, None, None]
+
+        K_full = K_full[:, :, None, None]
+        K_segment = K_segment[:, :, None, None]
+
+        # K_full = K_full * key_lengths_full.float_matrix[:, :, None, None]
+        # K_segment = K_segment * key_lengths_segment.float_matrix[:, :, None, None]
 
         KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, input_and_summary[:-1])
         KV_full = torch.einsum("nshd,nshm->nhmd", K_full, memory_and_input)
@@ -4784,25 +4793,26 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
 
         # return V.contiguous()
 
-        assert list(attention.shape) == [
-            batch_size * self.num_heads,
-            length + 1,
-            self.head_dim,
-        ]
+        # assert list(attention.shape) == [
+        #     batch_size * self.num_heads,
+        #     length + 1,
+        #     self.head_dim,
+        # ]
 
-        attention = (
-            attention.transpose(0, 1)
-                .contiguous()
-                .view(length + 1, batch_size, self.embed_dim)
-        )
+        # attention = (
+        #     attention.transpose(0, 1)
+        #         .contiguous()
+        #         .view(length + 1, batch_size, self.embed_dim)
+        # )
+        output = self.out_proj(attention)
+        memory = self.out_proj_mem(attention_memory)
+        # output_and_memory = self.out_proj(attention_memory)
+        #
+        # next_m = output_and_memory[-1:]
+        # next_m = self.squash_mem(next_m)
+        # output = output_and_memory[:-1]
 
-        output_and_memory = self.out_proj(attention)
-
-        next_m = output_and_memory[-1:]
-        next_m = self.squash_mem(next_m)
-        output = output_and_memory[:-1]
-
-        state["memory_banks"].append(next_m)
+        state["memory_banks"].append(memory)
 
         return output
 
