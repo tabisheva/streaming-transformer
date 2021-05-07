@@ -4733,6 +4733,16 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         # This Operator was used for factorization in PySpeech
         self.v2e = lambda x: x
 
+        self.k_proj = quant_noise(
+            nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+        self.v_proj = quant_noise(
+            nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+        self.q_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+
         if tanh_on_mem:
             self.squash_mem = torch.tanh
             self.nonlinear_squash_mem = True
@@ -4766,13 +4776,21 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
                 memory = memory[-self.max_memory_size:]
 
         memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
-        input_and_sum_query = input_and_summary
 
-        Q_segment = self.feature_map.forward_queries(input_and_summary[:-1])
-        Q_summary = self.feature_map.forward_queries(input_and_summary[-1])
+        Q_segment = self.q_proj(input_and_summary[:-1])
+        Q_summary = self.q_proj(input_and_summary[-1])
 
-        K_full = self.feature_map.forward_keys(memory_and_input)
-        K_segment = self.feature_map.forward_keys(input_and_summary[:-1])
+        K_full = self.k_proj(memory_and_input)
+        K_segment = self.k_proj(input_and_summary[:-1])
+
+        V_segment = self.v_proj(input_and_summary[:-1])
+        V_full = self.v_proj(memory_and_input)
+
+        Q_segment = self.feature_map.forward_queries(Q_segment)
+        Q_summary = self.feature_map.forward_queries(Q_summary)
+
+        K_full = self.feature_map.forward_keys(K_full)
+        K_segment = self.feature_map.forward_keys(K_segment)
 
         K_full = K_full[:, :, None, None]
         K_segment = K_segment[:, :, None, None]
@@ -4780,8 +4798,8 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         # K_full = K_full * key_lengths_full.float_matrix[:, :, None, None]
         # K_segment = K_segment * key_lengths_segment.float_matrix[:, :, None, None]
 
-        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, input_and_summary[:-1])
-        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, memory_and_input)
+        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, V_segment)
+        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
 
         # Compute the normalizer
         Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, KV_full.sum(dim=1)) + self.eps)
