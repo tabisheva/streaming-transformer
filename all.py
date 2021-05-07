@@ -4734,10 +4734,10 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         self.v2e = lambda x: x
 
         self.k_proj = quant_noise(
-            nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
         )
         self.v_proj = quant_noise(
-            nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
         )
         self.q_proj = quant_noise(
             nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
@@ -4751,6 +4751,7 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
             self.nonlinear_squash_mem = False
 
         self.max_memory_size = max_memory_size
+        self.eps = 1e-6
 
         self.feature_map = (
             elu_feature_map(embed_dim)
@@ -4777,23 +4778,23 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
 
         memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
 
-        Q_segment = self.q_proj(input_and_summary[:-1])
-        Q_summary = self.q_proj(input_and_summary[-1])
+        def view_heads(input_tensor, embed_dim, num_heads=8):
+            return input_tensor.view(input_tensor.shape[0], input_tensor.shape[1], num_heads, embed_dim // num_heads).transpose(0, 1).contiguous()
 
-        K_full = self.k_proj(memory_and_input)
-        K_segment = self.k_proj(input_and_summary[:-1])
+        Q_segment = view_heads(self.q_proj(input_and_summary[:-1]), self.embed_dim)
+        Q_summary = view_heads(self.q_proj(input_and_summary[-1:]), self.embed_dim)
 
-        V_segment = self.v_proj(input_and_summary[:-1])
-        V_full = self.v_proj(memory_and_input)
+        K_full = view_heads(self.k_proj(memory_and_input), self.embed_dim)
+        K_segment = view_heads(self.k_proj(input_and_summary[:-1]), self.embed_dim)
+
+        V_segment = view_heads(self.v_proj(input_and_summary[:-1]), self.embed_dim)
+        V_full = view_heads(self.v_proj(memory_and_input), self.embed_dim)
 
         Q_segment = self.feature_map.forward_queries(Q_segment)
         Q_summary = self.feature_map.forward_queries(Q_summary)
 
         K_full = self.feature_map.forward_keys(K_full)
         K_segment = self.feature_map.forward_keys(K_segment)
-
-        K_full = K_full[:, :, None, None]
-        K_segment = K_segment[:, :, None, None]
 
         # K_full = K_full * key_lengths_full.float_matrix[:, :, None, None]
         # K_segment = K_segment * key_lengths_segment.float_matrix[:, :, None, None]
@@ -4802,12 +4803,12 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
 
         # Compute the normalizer
-        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, KV_full.sum(dim=1)) + self.eps)
-        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, KV_segment.sum(dim=1)) + self.eps)
+        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, K_full.sum(dim=1)) + self.eps)
+        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, K_segment.sum(dim=1)) + self.eps)
 
         # Finally compute and return the new values
-        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full)
-        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory)
+        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full).transpose(0, 1).contiguous().view(length, batch_size, self.embed_dim)
+        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory).transpose(0, 1).contiguous().view(1, batch_size, self.embed_dim)
 
         # return V.contiguous()
 
