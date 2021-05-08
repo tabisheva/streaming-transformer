@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
+import time
 
 from sklearn.model_selection import train_test_split
 import torch
@@ -117,9 +118,12 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
     train_cer, train_wer, val_wer, val_cer = 0.0, 0.0, 0.0, 0.0
     train_losses = []
     model.train()
+    avg_training_time = 0.0
     for idx, sample in enumerate(train_dataloader):
         sample = to_gpu(sample, device)
+        start = time.time()
         outputs, _ = model(**sample["net_input"])
+        training_time = time.time() - start
         outputs = outputs.permute(0, 2, 1)
         #optimizer.zero_grad()
         optimizer.optimizer.zero_grad()
@@ -136,6 +140,8 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                                                                                            sample["target_lengths"])
         train_wer += train_epoch_wer
         train_cer += train_epoch_cer
+
+        avg_training_time += training_time
         if (idx + 1) % 100 == 0:
             if Params.wandb_log:
                 wandb.log({"train_loss": loss.item()})
@@ -143,9 +149,12 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
     model.eval()
     with torch.no_grad():
         val_losses = []
+        avg_val_time = 0.0
         for sample in test_dataloader:
             sample = to_gpu(sample, device)
+            start = time.time()
             outputs, _ = model(**sample["net_input"])
+            val_time = time.time() - start
             outputs = outputs.permute(0, 2, 1)
             loss = criterion(outputs, sample["targets"]).cpu()
             val_losses.append(loss.item())
@@ -157,12 +166,16 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
             val_wer += val_epoch_wer
             val_cer += val_epoch_cer
 
+            avg_val_time += val_time
+
     if Params.wandb_log:
         wandb.log({"val_wer": val_wer / len(test_dataset),
                    "train_cer": train_cer / len(train_dataset),
                    "val_loss": np.mean(val_losses),
                    "train_wer": train_wer / len(train_dataset),
                    "val_cer": val_cer / len(test_dataset),
+                   "training_time": avg_training_time / len(train_dataset),
+                   "inference_time": avg_val_time / len(test_dataset),
                    "train_samples": wandb.Table(columns=["Target text", "Predicted text"],
                                                 data=[[train_target_words, train_decoded_words]]),
                    "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
