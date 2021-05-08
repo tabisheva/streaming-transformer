@@ -3915,7 +3915,7 @@ class AugmentedMemoryTransformerEncoderLayer(TransformerEncoderLayer):
         self.left_context = args.left_context // args.encoder_stride
         self.right_context = args.right_context // args.encoder_stride
 
-    def forward(self, x, state):
+    def forward(self, x, state, **kwargs):
 
         length, batch_size, x_dim = x.size()
 
@@ -4034,6 +4034,10 @@ class MultiheadAttention(nn.Module):
         )
 
         self.out_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+
+        self.out_proj_mem = quant_noise(
             nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
         )
 
@@ -4729,6 +4733,16 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         # This Operator was used for factorization in PySpeech
         self.v2e = lambda x: x
 
+        self.k_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+        self.v_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+        self.q_proj = quant_noise(
+            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+        )
+
         if tanh_on_mem:
             self.squash_mem = torch.tanh
             self.nonlinear_squash_mem = True
@@ -4737,6 +4751,7 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
             self.nonlinear_squash_mem = False
 
         self.max_memory_size = max_memory_size
+        self.eps = 1e-6
 
         self.feature_map = (
             elu_feature_map(embed_dim)
@@ -4752,57 +4767,48 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         length = length - 1  # not include sum_query, last index
 
         memory = state["memory_banks"]
-        # TODO: positional embedding on memory
 
         if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
-            # TODO: need to fix here
             if self.max_memory_size == 0:
                 memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
             else:
                 memory = memory[-self.max_memory_size:]
 
         memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
-        input_and_sum_query = input_and_summary
 
-        Q_segment = self.feature_map.forward_queries(input_and_summary[:-1])
-        Q_summary = self.feature_map.forward_queries(input_and_summary[-1])
+        def view_heads(input_tensor, embed_dim, num_heads=8):
+            return input_tensor.view(input_tensor.shape[0], input_tensor.shape[1], num_heads, embed_dim // num_heads).transpose(0, 1).contiguous()
 
-        K_full = self.feature_map.forward_keys(memory_and_input)
-        K_segment = self.feature_map.forward_keys(input_and_summary[:-1])
-        #        K = K * key_lengths.float_matrix[:, :, None, None]
+        Q_segment = view_heads(self.q_proj(input_and_summary[:-1]), self.embed_dim)
+        Q_summary = view_heads(self.q_proj(input_and_summary[-1:]), self.embed_dim)
 
-        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, input_and_summary[:-1])
-        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, memory_and_input)
+        K_full = view_heads(self.k_proj(memory_and_input), self.embed_dim)
+        K_segment = view_heads(self.k_proj(input_and_summary[:-1]), self.embed_dim)
+
+        V_segment = view_heads(self.v_proj(input_and_summary[:-1]), self.embed_dim)
+        V_full = view_heads(self.v_proj(memory_and_input), self.embed_dim)
+
+        Q_segment = self.feature_map.forward_queries(Q_segment)
+        Q_summary = self.feature_map.forward_queries(Q_summary)
+
+        K_full = self.feature_map.forward_keys(K_full)
+        K_segment = self.feature_map.forward_keys(K_segment)
+
+        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, V_segment)
+        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
 
         # Compute the normalizer
-        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, KV_full.sum(dim=1)) + self.eps)
-        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, KV_segment.sum(dim=1)) + self.eps)
+        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, K_full.sum(dim=1)) + self.eps)
+        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, K_segment.sum(dim=1)) + self.eps)
 
         # Finally compute and return the new values
-        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full)
-        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory)
+        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full).transpose(0, 1).contiguous().view(length, batch_size, self.embed_dim)
+        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory).transpose(0, 1).contiguous().view(1, batch_size, self.embed_dim)
 
-        # return V.contiguous()
+        output = self.out_proj(attention)
+        memory = self.out_proj_mem(attention_memory)
 
-        assert list(attention.shape) == [
-            batch_size * self.num_heads,
-            length + 1,
-            self.head_dim,
-        ]
-
-        attention = (
-            attention.transpose(0, 1)
-                .contiguous()
-                .view(length + 1, batch_size, self.embed_dim)
-        )
-
-        output_and_memory = self.out_proj(attention)
-
-        next_m = output_and_memory[-1:]
-        next_m = self.squash_mem(next_m)
-        output = output_and_memory[:-1]
-
-        state["memory_banks"].append(next_m)
+        state["memory_banks"].append(memory)
 
         return output
 

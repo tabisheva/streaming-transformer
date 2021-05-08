@@ -45,7 +45,7 @@ if torch.cuda.is_available():
         torch.cuda.manual_seed_all(24)
 if Params.dataset != "LS":
     df = pd.read_csv("data/LJSpeech-1.1/metadata.csv", sep='|', quotechar='`', index_col=0, header=None)
-    train, test = train_test_split(df, test_size=0.2, random_state=10)
+    train, test = train_test_split(df, test_size=0.1, random_state=10)
 
     train_dataset = LJDataset(train, transform=transforms['train'])
     test_dataset = LJDataset(test, transform=transforms['test'])
@@ -72,13 +72,17 @@ device = torch.device(Params.device if torch.cuda.is_available() else "cpu")
 class TargetDictHolder:
     target_dictionary: Any
     tgt_dict: Any
-DICT_PATH = "data/vocabulary_LJ.txt"
+if Params.dataset == "LS":
+    DICT_PATH = f"/data/aotabisheva/data/libri/train-wav/vocabulary_LS_{Params.vocab_size}.txt"
+else:
+    DICT_PATH = f"/home/aotabisheva/streaming_transformer/data/vocabulary_LJ_{Params.vocab_size}.txt"
 tgt_dict = Dictionary.load(DICT_PATH)
 target_dict = TargetDictHolder(target_dictionary=tgt_dict, tgt_dict=tgt_dict)
 
 model = AugmentedMemoryConvTransformerModel.build_model(Params, target_dict)
 if Params.from_pretrained:
-    model.load_state_dict(torch.load(Params.model_path))
+    model.load_state_dict(torch.load(Params.model_path, map_location=device))
+    bpe_model: str = "vocabulary_LJ.model"
 model.to(device)
 criterion = nn.CrossEntropyLoss(ignore_index = 1)
 #optimizer = torch.optim.AdamW(model.parameters(), lr=Params.lr)
@@ -87,7 +91,10 @@ optimizer = ScheduledOpt(Params.encoder_ffn_embed_dim, 8000,
 
 num_steps = len(train_dataloader) * Params.num_epochs
 #lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min=0.00001)
-cerwer = CerWer("/data/aotabisheva/data/libri/train-wav")
+if Params.dataset == "LS":
+    cerwer = CerWer("/data/aotabisheva/data/libri/train-wav")
+else:
+    cerwer = CerWer("/home/aotabisheva/streaming_transformer/data")
 
 if Params.wandb_log:
     wandb.init(project=Params.wandb_name)
@@ -164,4 +171,4 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    })
 
     if (epoch % 5 == 0) and (epoch >= 10):
-        torch.save(model.state_dict(), f"streaming_transformer{epoch}libri.pth")
+        torch.save(model.state_dict(), f"streaming_transformer_64_4_512{epoch}lj.pth")
