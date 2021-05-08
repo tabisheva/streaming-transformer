@@ -68,6 +68,7 @@ test_dataloader = DataLoader(test_dataset,
                              collate_fn=collate_fn)
 
 device = torch.device(Params.device if torch.cuda.is_available() else "cpu")
+print(f"device {device} is used")
 
 @dataclass
 class TargetDictHolder:
@@ -77,12 +78,19 @@ if Params.dataset == "LS":
     DICT_PATH = f"/data/aotabisheva/data/libri/train-wav/vocabulary_LS_{Params.vocab_size}.txt"
 else:
     DICT_PATH = f"/home/aotabisheva/streaming_transformer/data/vocabulary_LJ_{Params.vocab_size}.txt"
+
+print(f"{Params.dataset} dataset is used")
+
 tgt_dict = Dictionary.load(DICT_PATH)
 target_dict = TargetDictHolder(target_dictionary=tgt_dict, tgt_dict=tgt_dict)
 
 model = AugmentedMemoryConvTransformerModel.build_model(Params, target_dict)
 if Params.from_pretrained:
     model.load_state_dict(torch.load(Params.model_path, map_location=device))
+    
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"model has {total_params} params")
+
 model.to(device)
 criterion = nn.CrossEntropyLoss(ignore_index = 1)
 #optimizer = torch.optim.AdamW(model.parameters(), lr=Params.lr)
@@ -114,6 +122,8 @@ def to_gpu(sample, device):
     return new_sample
 
 start_epoch = Params.start_epoch + 1 if Params.from_pretrained else 1
+best_cer = 10.0
+
 for epoch in range(start_epoch, Params.num_epochs + 1):
     train_cer, train_wer, val_wer, val_cer = 0.0, 0.0, 0.0, 0.0
     train_losses = []
@@ -181,6 +191,8 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
                                               data=[[val_target_words, val_decoded_words]]),
                    })
-
-    if (epoch % 5 == 0) and (epoch >= 10):
-        torch.save(model.state_dict(), f"left{Params.left_context}_right{Params.right_context}_segment{Params.segment_size}_epoch{epoch}_dataset{Params.dataset}_vocab_size{Params.vocab_size}_linear{Params.linear_attention}.pth")
+    if val_cer / len(test_dataset) < best_cer:
+        best_cer = val_cer / len(test_dataset)
+        model_name = f"left{Params.left_context}_right{Params.right_context}_segment{Params.segment_size}_epoch{epoch}_dataset{Params.dataset}_vocab_size{Params.vocab_size}_linear{Params.linear_attention}.pth"
+        torch.save(model.state_dict(), model_name)
+        print("we have one more checkpoint!")
