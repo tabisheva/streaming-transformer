@@ -4767,10 +4767,8 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         length = length - 1  # not include sum_query, last index
 
         memory = state["memory_banks"]
-        # TODO: positional embedding on memory
 
         if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
-            # TODO: need to fix here
             if self.max_memory_size == 0:
                 memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
             else:
@@ -4796,9 +4794,6 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         K_full = self.feature_map.forward_keys(K_full)
         K_segment = self.feature_map.forward_keys(K_segment)
 
-        # K_full = K_full * key_lengths_full.float_matrix[:, :, None, None]
-        # K_segment = K_segment * key_lengths_segment.float_matrix[:, :, None, None]
-
         KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, V_segment)
         KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
 
@@ -4810,26 +4805,8 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
         attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full).transpose(0, 1).contiguous().view(length, batch_size, self.embed_dim)
         attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory).transpose(0, 1).contiguous().view(1, batch_size, self.embed_dim)
 
-        # return V.contiguous()
-
-        # assert list(attention.shape) == [
-        #     batch_size * self.num_heads,
-        #     length + 1,
-        #     self.head_dim,
-        # ]
-
-        # attention = (
-        #     attention.transpose(0, 1)
-        #         .contiguous()
-        #         .view(length + 1, batch_size, self.embed_dim)
-        # )
         output = self.out_proj(attention)
         memory = self.out_proj_mem(attention_memory)
-        # output_and_memory = self.out_proj(attention_memory)
-        #
-        # next_m = output_and_memory[-1:]
-        # next_m = self.squash_mem(next_m)
-        # output = output_and_memory[:-1]
 
         state["memory_banks"].append(memory)
 
