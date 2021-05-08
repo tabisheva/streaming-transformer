@@ -1,26 +1,25 @@
-class Params:
-    num_features: int = 80
+class Paramso   
+num_features: int = 80
     min_time_stretch: float = 0.9
     max_time_stretch: float = 1.1
     sample_rate: int = 16000
     min_shift: int = -3
     max_shift: int = 3
-    dataset: str = "LS"
-    bpe_model: str = "vocabulary_LS.model" if dataset == "LS" else "vocabulary_LJ.model"
+    dataset: str = "LJ"
     vocab_size: int = 1000
     time_masking: int = 1
+    bpe_model: str = f"vocabulary_LS_{vocab_size}.model" if dataset == "LS" else f"vocabulary_LJ_{vocab_size}.model"
     noise_variance: float = 0.01
-    batch_size: int = 8
+    batch_size: int = 16
     num_workers: int = 8
     lr: float = 0.002
-    num_epochs: int = 10
+    num_epochs: int = 30
     clip_grad_norm: float = 10.0
     wandb_name: str = "streaming-transformer"
     from_pretrained: bool = False
-    model_path: str = "left20_right20_segment100_epoch5.pth"
-    device: str = "cpu"
+    device: str = "cuda:0"
     start_epoch: int = 0
-    wandb_log: bool = False
+    wandb_log: bool = True
     segment_size: int = 100
     left_context: int = 32
     right_context: int = 32

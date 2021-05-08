@@ -82,7 +82,6 @@ target_dict = TargetDictHolder(target_dictionary=tgt_dict, tgt_dict=tgt_dict)
 model = AugmentedMemoryConvTransformerModel.build_model(Params, target_dict)
 if Params.from_pretrained:
     model.load_state_dict(torch.load(Params.model_path, map_location=device))
-    bpe_model: str = "vocabulary_LJ.model"
 model.to(device)
 criterion = nn.CrossEntropyLoss(ignore_index = 1)
 #optimizer = torch.optim.AdamW(model.parameters(), lr=Params.lr)
@@ -171,4 +170,4 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    })
 
     if (epoch % 5 == 0) and (epoch >= 10):
-        torch.save(model.state_dict(), f"streaming_transformer_64_4_512{epoch}lj.pth")
+        torch.save(model.state_dict(), f"left{Params.left_context}_right{Params.right_context}_segment{Params.segment_size}_epoch{epoch}_dataset{Params.dataset}_vocab_size{Params.vocab_size}_linear{Params.linear_attention}.pth")
