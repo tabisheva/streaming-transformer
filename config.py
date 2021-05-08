@@ -1,5 +1,5 @@
-class Paramso   
-num_features: int = 80
+class Params:
+    num_features: int = 80
     min_time_stretch: float = 0.9
     max_time_stretch: float = 1.1
     sample_rate: int = 16000
