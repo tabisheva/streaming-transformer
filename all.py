@@ -22,6 +22,8 @@ from itertools import accumulate
 from multiprocessing import Pool
 from typing import Tuple, Optional, Dict, List, Union, Any, Type, NamedTuple, Callable
 
+import torch.autograd.profiler as profiler
+
 import torch
 from hydra.core.config_store import ConfigStore
 from hydra.core.global_hydra import GlobalHydra
@@ -784,10 +786,13 @@ class ConvTransformerModel(FairseqEncoderDecoderModel):
     """
 
     def forward(self, src_tokens, src_lengths, prev_output_tokens):
-        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
-        decoder_out = self.decoder(
-            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
-        )
+        with profiler.record_function("Encoder_out"):
+            encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
+
+        with profiler.record_function("Decoder_out"):
+            decoder_out = self.decoder(
+                prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+            )
         return decoder_out
 
 
@@ -4581,90 +4586,91 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
 
         """
 
-        length, batch_size, _ = input_and_summary.shape
-        length = length - 1  # not include sum_query, last index
+        with profiler.record_function("MultiAttn_forward"):
+            length, batch_size, _ = input_and_summary.shape
+            length = length - 1  # not include sum_query, last index
 
-        memory = state["memory_banks"]
-        # TODO: positional embedding on memory
+            memory = state["memory_banks"]
+            # TODO: positional embedding on memory
 
-        if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
-            # TODO: need to fix here
-            if self.max_memory_size == 0:
-                memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
-            else:
-                memory = memory[-self.max_memory_size :]
+            if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
+                # TODO: need to fix here
+                if self.max_memory_size == 0:
+                    memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
+                else:
+                    memory = memory[-self.max_memory_size :]
 
-        memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
-        input_and_sum_query = input_and_summary
+            memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
+            input_and_sum_query = input_and_summary
 
-        q = self.q_proj(self.v2e(input_and_sum_query))
-        k = self.k_proj(self.v2e(memory_and_input))
-        v = self.v_proj(self.v2e(memory_and_input))
+            q = self.q_proj(self.v2e(input_and_sum_query))
+            k = self.k_proj(self.v2e(memory_and_input))
+            v = self.v_proj(self.v2e(memory_and_input))
 
-        q = (
-            q.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-            * self.scaling
-        )
-        k = (
-            k.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-        )
-
-        v = (
-            v.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-        )
-
-        attention_weights = torch.bmm(q, k.transpose(1, 2))
-
-        if self.disable_mem_on_mem_attn:
-            attention_weights = self.suppress_mem_on_mem_attention(
-                batch_size, self.num_heads, len(memory), attention_weights
+            q = (
+                q.contiguous()
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
+                * self.scaling
+            )
+            k = (
+                k.contiguous()
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
             )
 
-        if self.std_scale is not None:
-            attention_weights = attention_suppression(attention_weights, self.std_scale)
+            v = (
+                v.contiguous()
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
+            )
 
-        assert list(attention_weights.shape) == [
-            batch_size * self.num_heads,
-            length + 1,
-            length + len(memory),
-        ]
+            attention_weights = torch.bmm(q, k.transpose(1, 2))
 
-        attention_weights = softmax(
-            attention_weights.float(), dim=-1
-        ).type_as(attention_weights)
+            if self.disable_mem_on_mem_attn:
+                attention_weights = self.suppress_mem_on_mem_attention(
+                    batch_size, self.num_heads, len(memory), attention_weights
+                )
 
-        attention_probs = self.dropout_module(attention_weights)
+            if self.std_scale is not None:
+                attention_weights = attention_suppression(attention_weights, self.std_scale)
 
-        # [T, T, B, n_head] + [T, B, n_head, d_head] -> [T, B, n_head, d_head]
-        attention = torch.bmm(attention_probs, v)
+            assert list(attention_weights.shape) == [
+                batch_size * self.num_heads,
+                length + 1,
+                length + len(memory),
+            ]
 
-        assert list(attention.shape) == [
-            batch_size * self.num_heads,
-            length + 1,
-            self.head_dim,
-        ]
+            attention_weights = softmax(
+                attention_weights.float(), dim=-1
+            ).type_as(attention_weights)
 
-        attention = (
-            attention.transpose(0, 1)
-            .contiguous()
-            .view(length + 1, batch_size, self.embed_dim)
-        )
+            attention_probs = self.dropout_module(attention_weights)
 
-        output_and_memory = self.out_proj(attention)
+            # [T, T, B, n_head] + [T, B, n_head, d_head] -> [T, B, n_head, d_head]
+            attention = torch.bmm(attention_probs, v)
 
-        next_m = output_and_memory[-1:]
-        next_m = self.squash_mem(next_m)
-        output = output_and_memory[:-1]
+            assert list(attention.shape) == [
+                batch_size * self.num_heads,
+                length + 1,
+                self.head_dim,
+            ]
 
-        state["memory_banks"].append(next_m)
+            attention = (
+                attention.transpose(0, 1)
+                .contiguous()
+                .view(length + 1, batch_size, self.embed_dim)
+            )
 
-        return output
+            output_and_memory = self.out_proj(attention)
+
+            next_m = output_and_memory[-1:]
+            next_m = self.squash_mem(next_m)
+            output = output_and_memory[:-1]
+
+            state["memory_banks"].append(next_m)
+
+            return output
 
     def suppress_mem_on_mem_attention(
         self, B: int, num_heads: int, mem_size: int, attention_weight: Tensor
@@ -4763,54 +4769,61 @@ class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
             plus one summarization query
         """
 
-        length, batch_size, _ = input_and_summary.shape
-        length = length - 1  # not include sum_query, last index
+        with profiler.record_function("MultiLinearAttn_forward"):
+            length, batch_size, _ = input_and_summary.shape
+            length = length - 1  # not include sum_query, last index
 
-        memory = state["memory_banks"]
+            memory = state["memory_banks"]
 
-        if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
-            if self.max_memory_size == 0:
-                memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
-            else:
-                memory = memory[-self.max_memory_size:]
+            if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
+                if self.max_memory_size == 0:
+                    memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
+                else:
+                    memory = memory[-self.max_memory_size:]
 
-        memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
+            memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
 
-        def view_heads(input_tensor, embed_dim, num_heads=8):
-            return input_tensor.view(input_tensor.shape[0], input_tensor.shape[1], num_heads, embed_dim // num_heads).transpose(0, 1).contiguous()
+            def view_heads(input_tensor, embed_dim, num_heads=8):
+                return input_tensor.view(input_tensor.shape[0], input_tensor.shape[1], num_heads, embed_dim // num_heads).transpose(0, 1).contiguous()
 
-        Q_segment = view_heads(self.q_proj(input_and_summary[:-1]), self.embed_dim)
-        Q_summary = view_heads(self.q_proj(input_and_summary[-1:]), self.embed_dim)
+            with profiler.record_function("MultiLinearAttn_view_and_proj"):
+                Q_segment = view_heads(self.q_proj(input_and_summary[:-1]), self.embed_dim)
+                Q_summary = view_heads(self.q_proj(input_and_summary[-1:]), self.embed_dim)
 
-        K_full = view_heads(self.k_proj(memory_and_input), self.embed_dim)
-        K_segment = view_heads(self.k_proj(input_and_summary[:-1]), self.embed_dim)
+                K_full = view_heads(self.k_proj(memory_and_input), self.embed_dim)
+                K_segment = view_heads(self.k_proj(input_and_summary[:-1]), self.embed_dim)
 
-        V_segment = view_heads(self.v_proj(input_and_summary[:-1]), self.embed_dim)
-        V_full = view_heads(self.v_proj(memory_and_input), self.embed_dim)
+                V_segment = view_heads(self.v_proj(input_and_summary[:-1]), self.embed_dim)
+                V_full = view_heads(self.v_proj(memory_and_input), self.embed_dim)
 
-        Q_segment = self.feature_map.forward_queries(Q_segment)
-        Q_summary = self.feature_map.forward_queries(Q_summary)
+            with profiler.record_function("MultiLinearAttn_elu_feature_map"):
+                Q_segment = self.feature_map.forward_queries(Q_segment)
+                Q_summary = self.feature_map.forward_queries(Q_summary)
 
-        K_full = self.feature_map.forward_keys(K_full)
-        K_segment = self.feature_map.forward_keys(K_segment)
+                K_full = self.feature_map.forward_keys(K_full)
+                K_segment = self.feature_map.forward_keys(K_segment)
 
-        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, V_segment)
-        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
+            with profiler.record_function("MultiLinearAttn_einsum"):
 
-        # Compute the normalizer
-        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, K_full.sum(dim=1)) + self.eps)
-        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, K_segment.sum(dim=1)) + self.eps)
+                KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, V_segment)
+                KV_full = torch.einsum("nshd,nshm->nhmd", K_full, V_full)
 
-        # Finally compute and return the new values
-        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full).transpose(0, 1).contiguous().view(length, batch_size, self.embed_dim)
-        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory).transpose(0, 1).contiguous().view(1, batch_size, self.embed_dim)
+                # Compute the normalizer``
+                Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, K_full.sum(dim=1)) + self.eps)
+                Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, K_segment.sum(dim=1)) + self.eps)
 
-        output = self.out_proj(attention)
-        memory = self.out_proj_mem(attention_memory)
+                # Finally compute and return the new values
+                attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full).transpose(0, 1).contiguous().view(length, batch_size, self.embed_dim)
+                attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory).transpose(0, 1).contiguous().view(1, batch_size, self.embed_dim)
 
-        state["memory_banks"].append(memory)
+            with profiler.record_function("MultiLinearAttn_out_proj"):
 
-        return output
+                output = self.out_proj(attention)
+                memory = self.out_proj_mem(attention_memory)
+
+            state["memory_banks"].append(memory)
+
+            return output
 
 
 class SequenceEncoder(FairseqEncoder):

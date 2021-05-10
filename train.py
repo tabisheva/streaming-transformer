@@ -1,21 +1,24 @@
+import os.path
+import time
 from dataclasses import dataclass
 from typing import Any
-import time
 
-from sklearn.model_selection import train_test_split
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-import pandas as pd
-from src.dataset import LJDataset, LibriSpeechDataset
-from config import Params
-from src.decoder import CerWer
-from src.data_transforms import transforms, collate_fn
-import wandb
-import numpy as np
-from all import Dictionary
 
+import wandb
+from all import Dictionary
+from config import Params
 from model import AugmentedMemoryConvTransformerModel
+from src.data_transforms import transforms, collate_fn
+from src.dataset import LJDataset, LibriSpeechDataset
+from src.decoder import CerWer
+import torch.autograd.profiler as profiler
+
 
 class ScheduledOpt:
 
@@ -53,6 +56,7 @@ if Params.dataset != "LS":
 else:
     train_dataset = LibriSpeechDataset(mode="train", transform=transforms['train'])
     test_dataset = LibriSpeechDataset(mode="test", transform=transforms['test'])
+print(len(test_dataset))
 
 train_dataloader = DataLoader(train_dataset,
                               batch_size=Params.batch_size,
@@ -74,10 +78,11 @@ print(f"device {device} is used")
 class TargetDictHolder:
     target_dictionary: Any
     tgt_dict: Any
+
 if Params.dataset == "LS":
-    DICT_PATH = f"/data/aotabisheva/data/libri/train-wav/vocabulary_LS_{Params.vocab_size}.txt"
+    DICT_PATH = os.path.join(Params.path_prefix, f"data/libri/train-wav/vocabulary_LS_{Params.vocab_size}.txt")
 else:
-    DICT_PATH = f"/home/aotabisheva/streaming_transformer/data/vocabulary_LJ_{Params.vocab_size}.txt"
+    DICT_PATH = os.path.join(Params.path_prefix, f"streaming_transformer/data/vocabulary_LJ_{Params.vocab_size}.txt")
 
 print(f"{Params.dataset} dataset is used")
 
@@ -86,7 +91,7 @@ target_dict = TargetDictHolder(target_dictionary=tgt_dict, tgt_dict=tgt_dict)
 
 model = AugmentedMemoryConvTransformerModel.build_model(Params, target_dict)
 if Params.from_pretrained:
-    model.load_state_dict(torch.load(Params.model_path, map_location=device))
+    model.load_state_dict(torch.load(Params.model_name, map_location=device))
     
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"model has {total_params} params")
@@ -102,7 +107,7 @@ num_steps = len(train_dataloader) * Params.num_epochs
 if Params.dataset == "LS":
     cerwer = CerWer("/data/aotabisheva/data/libri/train-wav")
 else:
-    cerwer = CerWer("/home/aotabisheva/streaming_transformer/data")
+    cerwer = CerWer(os.path.join(Params.path_prefix, "streaming_transformer/data"))
 
 if Params.wandb_log:
     wandb.init(project=Params.wandb_name)
@@ -124,59 +129,85 @@ def to_gpu(sample, device):
 start_epoch = Params.start_epoch + 1 if Params.from_pretrained else 1
 best_cer = 10.0
 
+def print_profiling(profiler_inst, metrics_names: list, part: str):
+    if not Params.wandb_log:
+        return
+
+    event_list = profiler_inst.key_averages()
+    met_set = set(metrics_names)
+    events = [event for event in event_list if event.key in met_set]
+    for event in events:
+        wandb.log({"{part}_cpu_time_ms".format(part=part): event.cpu_time_total / 1000})
+        wandb.log({"{part}_gpu_time_ms".format(part=part): event.cuda_time_total / 1000})
+
+
 for epoch in range(start_epoch, Params.num_epochs + 1):
     train_cer, train_wer, val_wer, val_cer = 0.0, 0.0, 0.0, 0.0
     train_losses = []
     model.train()
-    avg_training_time = 0.0
-    for idx, sample in enumerate(train_dataloader):
-        sample = to_gpu(sample, device)
-        start = time.time()
-        outputs, _ = model(**sample["net_input"])
-        training_time = time.time() - start
-        outputs = outputs.permute(0, 2, 1)
-        #optimizer.zero_grad()
-        optimizer.optimizer.zero_grad()
-        loss = criterion(outputs, sample["targets"]).cpu()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), Params.clip_grad_norm)
-        optimizer.step()
-#        lr_scheduler.step()
-        train_losses.append(loss.item())
-        _, max_probs = torch.max(outputs, 1)
-        train_epoch_cer, train_epoch_wer, train_decoded_words, train_target_words = cerwer(max_probs.long().cpu().numpy(),
-                                                                                           sample["targets"].cpu().numpy(),
-                                                                                           sample["net_input"]["src_lengths"],
-                                                                                           sample["target_lengths"])
-        train_wer += train_epoch_wer
-        train_cer += train_epoch_cer
+    with profiler.profile(record_shapes=True) as prof:
+        for idx, sample in enumerate(train_dataloader):
+            sample = to_gpu(sample, device)
 
-        avg_training_time += training_time
-        if (idx + 1) % 100 == 0:
-            if Params.wandb_log:
-                wandb.log({"train_loss": loss.item()})
+            with profiler.record_function("model_forward_batch"):
+                outputs, extra = model(**sample["net_input"])
+
+            outputs = outputs.permute(0, 2, 1)
+            optimizer.optimizer.zero_grad()
+            loss = criterion(outputs, sample["targets"]).cpu()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), Params.clip_grad_norm)
+            optimizer.step()
+            train_losses.append(loss.item())
+            _, max_probs = torch.max(outputs, 1)
+            train_epoch_cer, train_epoch_wer, train_decoded_words, train_target_words = cerwer(max_probs.long().cpu().numpy(),
+                                                                                               sample["targets"].cpu().numpy(),
+                                                                                               sample["net_input"]["src_lengths"],
+                                                                                               sample["target_lengths"])
+            train_wer += train_epoch_wer
+            train_cer += train_epoch_cer
+
+            if (idx + 1) % 100 == 0:
+                if Params.wandb_log:
+                    wandb.log({"train_loss": loss.item()})
+
+
+    print_profiling(prof, metrics_names=["model_forward_batch"], part="forward_train")
+    if Params.linear_attention:
+        print_profiling(prof, metrics_names=["MultiLinearAttn_forward"], part="multihead_train")
+        prof.export_chrome_trace("linear_training_epoch{epoch}_linear{Params.linear_attention}_left{Params.left_context}.json")
+    else:
+        print_profiling(prof, metrics_names=["MultiAttn_forward"], part="multihead_train")
+        prof.export_chrome_trace("softmax_training_epoch{epoch}_linear{Params.linear_attention}_left{Params.left_context}.json")
 
     model.eval()
     with torch.no_grad():
         val_losses = []
-        avg_val_time = 0.0
-        for sample in test_dataloader:
-            sample = to_gpu(sample, device)
-            start = time.time()
-            outputs, _ = model(**sample["net_input"])
-            val_time = time.time() - start
-            outputs = outputs.permute(0, 2, 1)
-            loss = criterion(outputs, sample["targets"]).cpu()
-            val_losses.append(loss.item())
-            _, max_probs = torch.max(outputs, 1)
-            val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.long().cpu().numpy(),
-                                                                                           sample["targets"].cpu().numpy(),
-                                                                                           sample["net_input"]["src_lengths"],
-                                                                                           sample["target_lengths"])
-            val_wer += val_epoch_wer
-            val_cer += val_epoch_cer
+        with profiler.profile(record_shapes=True) as prof:
+            for idx, sample in enumerate(test_dataloader):
+                sample = to_gpu(sample, device)
 
-            avg_val_time += val_time
+                with profiler.record_function("model_forward_batch"):
+                    outputs, extra = model(**sample["net_input"])
+
+                outputs = outputs.permute(0, 2, 1)
+                loss = criterion(outputs, sample["targets"]).cpu()
+                val_losses.append(loss.item())
+                _, max_probs = torch.max(outputs, 1)
+                val_epoch_cer, val_epoch_wer, val_decoded_words, val_target_words = cerwer(max_probs.long().cpu().numpy(),
+                                                                                               sample["targets"].cpu().numpy(),
+                                                                                               sample["net_input"]["src_lengths"],
+                                                                                               sample["target_lengths"])
+                val_wer += val_epoch_wer
+                val_cer += val_epoch_cer
+
+        print_profiling(prof, metrics_names=["model_forward_batch"], part="forward_test")
+        if Params.linear_attention:
+            print_profiling(prof, metrics_names=["MultiLinearAttn_forward"], part="multihead_test")
+            prof.export_chrome_trace("linear_inference_epoch{epoch}_linear{Params.linear_attention}_left{Params.left_context}.json")
+        else:
+            print_profiling(prof, metrics_names=["MultiAttn_forward"], part="multihead_test")
+            prof.export_chrome_trace("softmax_inference_epoch{epoch}_linear{Params.linear_attention}_left{Params.left_context}.json")
 
     if Params.wandb_log:
         wandb.log({"val_wer": val_wer / len(test_dataset),
@@ -184,8 +215,6 @@ for epoch in range(start_epoch, Params.num_epochs + 1):
                    "val_loss": np.mean(val_losses),
                    "train_wer": train_wer / len(train_dataset),
                    "val_cer": val_cer / len(test_dataset),
-                   "training_time": avg_training_time / len(train_dataset),
-                   "inference_time": avg_val_time / len(test_dataset),
                    "train_samples": wandb.Table(columns=["Target text", "Predicted text"],
                                                 data=[[train_target_words, train_decoded_words]]),
                    "val_samples": wandb.Table(columns=["Target text", "Predicted text"],
