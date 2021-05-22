@@ -4,11 +4,6 @@ from config import Params
 import sentencepiece as sp
 import os
 
-if Params.dataset == "LJ":
-    DATA_ROOT = "../data/LJSpeech-1.1"
-else:
-    DATA_ROOT = "/data/aotabisheva/data/libri/train-wav"
-
 UNK_TOKEN, UNK_TOKEN_ID = "<unk>", 3
 BOS_TOKEN, BOS_TOKEN_ID = "<s>", 0
 EOS_TOKEN, EOS_TOKEN_ID = "</s>", 2
@@ -16,8 +11,11 @@ PAD_TOKEN, PAD_TOKEN_ID = "<pad>", 1
 
 
 def gen_vocab(
-    input_path: Path, output_path_prefix: Path, model_type="bpe",
-    vocab_size=1000, special_symbols: Optional[List[str]] = None
+    input_path: Path,
+    output_path_prefix: Path,
+    model_type="bpe",
+    vocab_size=1000,
+    special_symbols: Optional[List[str]] = None,
 ):
     # Train SentencePiece Model
     arguments = [
@@ -56,23 +54,19 @@ def gen_vocab(
             f_out.write(f"{s} 1\n")
 
 
-def main_LJ():
-    with open(os.path.join(DATA_ROOT, "metadata.csv"), "r") as meta, open(os.path.join(DATA_ROOT, "text_for_dict"), "w") as source:
+def main():
+    with open(os.path.join(Params.dataset_path, "metadata.txt"), "r") as meta, open(
+        os.path.join(Params.dataset_path, "text_for_dict"), "w"
+    ) as source:
         for line in meta.readlines():
-            source.write(line.split('|')[2] + "\n")
-    gen_vocab(Path(os.path.join(DATA_ROOT, "text_for_dict")), Path(f"vocabulary_LJ_{Params.vocab_size}"), vocab_size=Params.vocab_size)
-
-
-def main_LS():
-    with open(os.path.join(DATA_ROOT, "metadata.txt"), "r") as meta, open(os.path.join(DATA_ROOT, "text_for_dict"), "w") as source:
-        for line in meta.readlines():
-            _, text = line.strip().lower().split(" ", 1)
+            text = line.split("|")[2]
             source.write(text + "\n")
-    gen_vocab(Path(os.path.join(DATA_ROOT, "text_for_dict")), Path(f"vocabulary_LS_{Params.vocab_size}"), vocab_size=Params.vocab_size)
+    gen_vocab(
+        Path(os.path.join(Params.dataset_path, "text_for_dict")),
+        Path(f"vocabulary_LJ_{Params.vocab_size}"),
+        vocab_size=Params.vocab_size,
+    )
 
 
-if __name__=="__main__":
-    if Params.dataset == "LJ":
-        main_LJ()
-    else:
-        main_LS()
+if __name__ == "__main__":
+    main()

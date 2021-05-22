@@ -1,14 +1,14 @@
-import torch
-from torchvision import transforms
-from torch import distributions
-import torchaudio
-from config import Params, MelSpectrogramConfig
 import librosa
 import numpy as np
+import torch
+import torchaudio
+from torch import distributions
+from torchvision import transforms
+
+from config import Params, MelSpectrogramConfig
 
 
 class MelSpectrogram(torch.nn.Module):
-
     def __init__(self, config):
         super(MelSpectrogram, self).__init__()
 
@@ -21,7 +21,7 @@ class MelSpectrogram(torch.nn.Module):
             n_fft=config.n_fft,
             f_min=config.f_min,
             f_max=config.f_max,
-            n_mels=config.n_mels
+            n_mels=config.n_mels,
         )
 
         self.mel_spectrogram.spectrogram.power = config.power
@@ -31,7 +31,7 @@ class MelSpectrogram(torch.nn.Module):
             n_fft=config.n_fft,
             n_mels=config.n_mels,
             fmin=config.f_min,
-            fmax=config.f_max
+            fmax=config.f_max,
         ).T
         self.mel_spectrogram.mel_scale.fb.copy_(torch.tensor(mel_basis))
 
@@ -41,15 +41,12 @@ class MelSpectrogram(torch.nn.Module):
         :return: Shape is [B, n_mels, T']
         """
 
-        mel = self.mel_spectrogram(audio) \
-            .clamp_(min=1e-5) \
-            .log_()
+        mel = self.mel_spectrogram(audio).clamp_(min=1e-5).log_()
 
         return mel
 
 
 class AddNormalNoise(object):
-
     def __init__(self):
         self.var = Params.noise_variance
 
@@ -61,7 +58,6 @@ class AddNormalNoise(object):
 
 
 class TimeStretch(object):
-
     def __init__(self):
         self.min_scale = Params.min_time_stretch
         self.max_scale = Params.max_time_stretch
@@ -84,7 +80,9 @@ class PitchShifting(object):
     def __call__(self, wav):
         random_shift = np.random.uniform(self.min_shift, self.max_shift, 1)[0]
         if np.random.uniform() < 0.5:
-            wav_shifted = librosa.effects.pitch_shift(wav.numpy(), self.sample_rate, random_shift)
+            wav_shifted = librosa.effects.pitch_shift(
+                wav.numpy(), self.sample_rate, random_shift
+            )
         else:
             wav_shifted = wav.numpy()
         return torch.from_numpy(wav_shifted)
@@ -94,6 +92,7 @@ class NormalizePerFeature(object):
     """
     Normalize the spectrogram to mean=0, std=1 per channel
     """
+
     def __call__(self, spec):
         log_mel = torch.log(torch.clamp(spec, min=1e-18))
         mean = torch.mean(log_mel, dim=1, keepdim=True)
@@ -103,18 +102,22 @@ class NormalizePerFeature(object):
 
 
 transforms = {
-    'train': transforms.Compose([
-        AddNormalNoise(),
-        PitchShifting(),
-        TimeStretch(),
-        MelSpectrogram(MelSpectrogramConfig),
-        NormalizePerFeature(),
-        torchaudio.transforms.TimeMasking(Params.time_masking, True),
-    ]),
-    'test': transforms.Compose([
-        MelSpectrogram(MelSpectrogramConfig),
-        NormalizePerFeature(),
-    ]),
+    "train": transforms.Compose(
+        [
+            AddNormalNoise(),
+            PitchShifting(),
+            TimeStretch(),
+            MelSpectrogram(MelSpectrogramConfig),
+            NormalizePerFeature(),
+            torchaudio.transforms.TimeMasking(Params.time_masking, True),
+        ]
+    ),
+    "test": transforms.Compose(
+        [
+            MelSpectrogram(MelSpectrogramConfig),
+            NormalizePerFeature(),
+        ]
+    ),
 }
 
 
@@ -128,16 +131,18 @@ def collate_fn(batch):
              tensor (batch, ) with targets_lengths
     """
 
-
     inputs, inputs_length, targets, targets_length = list(zip(*batch))
     input_aligned = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True)
 
     start_with_eos = [torch.cat([torch.Tensor([2]), target]) for target in targets]
     end_with_eos = [torch.cat([target, torch.Tensor([2])]) for target in targets]
 
-
-    prev_output_tokens_aligned = torch.nn.utils.rnn.pad_sequence(start_with_eos, batch_first=True, padding_value=1.0)
-    target_aligned = torch.nn.utils.rnn.pad_sequence(end_with_eos, batch_first=True, padding_value=1.0)
+    prev_output_tokens_aligned = torch.nn.utils.rnn.pad_sequence(
+        start_with_eos, batch_first=True, padding_value=1.0
+    )
+    target_aligned = torch.nn.utils.rnn.pad_sequence(
+        end_with_eos, batch_first=True, padding_value=1.0
+    )
 
     sample = {}
     net_input = {}

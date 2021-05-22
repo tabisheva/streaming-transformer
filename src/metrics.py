@@ -1,9 +1,10 @@
 import editdistance
-from src.dataset import prepare_bpe
+
+from data.dataset import prepare_bpe
 
 
-class CerWer():
-    def __init__(self, bpe_path, blank_index=0, space_simbol=' '):
+class CerWer:
+    def __init__(self, bpe_path, blank_index=0, space_simbol=" "):
         self.bpe = prepare_bpe(bpe_path)
         self.idx2char = self.bpe.id_to_piece
         self.blank_index = blank_index
@@ -20,8 +21,12 @@ class CerWer():
         """
         cer = 0.0
         wer = 0.0
-        for predict, target, input_length, target_length in zip(predicts, targets, inputs_length, targets_length):
-            predict_string = self.process_string(predict, input_length, remove_repetitions=True)
+        for predict, target, input_length, target_length in zip(
+            predicts, targets, inputs_length, targets_length
+        ):
+            predict_string = self.process_string(
+                predict, input_length, remove_repetitions=True
+            )
             target_string = self.process_string(target, target_length)
 
             predict_words = predict_string.rstrip().split(self.space_simbol)
@@ -54,7 +59,8 @@ class CerWer():
         :param input_len:
         :return:
         """
-        predict_string = self.process_string(predicts, input_len, remove_repetitions=True)
-        predict_words = predict_string.split('▁') # TODO: another space simbol
+        predict_string = self.process_string(
+            predicts, input_len, remove_repetitions=True
+        )
+        predict_words = predict_string.split("▁")  # TODO: another space simbol
         return predict_words
-

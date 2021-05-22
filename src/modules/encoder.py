@@ -1,19 +1,15 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import math
-from torch import Tensor
-from typing import Dict, Tuple, List, NamedTuple, Optional
-from layers import (AugmentedMemoryTransformerEncoderLayer,
-                    TransformerEncoderLayer,
-                    LayerNorm,
-                    PositionalEmbedding,
-                    MultiheadAttention)
-from utils import (lengths_to_padding_mask,
-                   sequence_to_segments,
-                   segments_to_sequence,
-                   lengths_to_encoder_padding_mask,
-                   elu_feature_map)
+
+import torch
+from torch import Tensor, nn as nn
+
+from typing import List, Tuple, Dict
+
+from torch.nn import functional as F
+
+from src.modules.utils import sequence_to_segments, segments_to_sequence, lengths_to_encoder_padding_mask, \
+    lengths_to_padding_mask
+from src.modules.layers import AugmentedMemoryTransformerEncoderLayer, TransformerEncoderLayer, PositionalEmbedding, LayerNorm
 
 
 class FairseqEncoder(nn.Module):
@@ -35,6 +31,7 @@ class FairseqEncoder(nn.Module):
 
     def forward_torchscript(self, net_input: Dict[str, Tensor]):
         """A TorchScript-compatible version of forward.
+
         Encoders which use additional arguments may want to override
         this method for TorchScript compatibility.
         """
@@ -56,9 +53,11 @@ class FairseqEncoder(nn.Module):
     def reorder_encoder_out(self, encoder_out, new_order):
         """
         Reorder encoder output according to `new_order`.
+
         Args:
             encoder_out: output from the ``forward()`` method
             new_order (LongTensor): desired order
+
         Returns:
             `encoder_out` rearranged according to `new_order`
         """
@@ -80,6 +79,102 @@ class FairseqEncoder(nn.Module):
                 m.set_num_updates(num_updates)
 
         self.apply(_apply)
+
+
+class SequenceEncoder(FairseqEncoder):
+    """
+    SequenceEncoder encodes sequences.
+
+    More specifically, `src_tokens` and `src_lengths` in `forward()` should
+    describe a batch of "complete" sequences rather than segments.
+
+    Segment-by-segment inference can be triggered by `segment_size`:
+    1) `segment_size` is None:
+        SequenceEncoder treats the input sequence as one single segment.
+    2) `segment_size` is not None (some int instead):
+        SequenceEncoder does the following:
+            1. breaks the input sequence into several segments
+            2. inference on each segment and collect the outputs
+            3. concatanete segment outputs into the output sequence.
+    Note that `segment_size` here shouldn't include additional left/right
+    contexts needed, for example if we wish to infer with LC-BLSTM where the
+    middle chunk size is 100 and right context is 20, `segment_size` should be
+    100.
+    """
+
+    def __init__(self, args, module):
+        super().__init__(None)
+
+        self.module = module
+        self.input_time_axis = 1
+        self.output_time_axis = 0
+        self.segment_size = args.segment_size
+        self.left_context = args.left_context
+        self.right_context = args.right_context
+
+    def forward(
+        self,
+        src_tokens: Tensor,
+        src_lengths: Tensor,
+        states=None,
+    ):
+
+        seg_src_tokens_lengths = sequence_to_segments(
+            sequence=src_tokens,
+            time_axis=self.input_time_axis,
+            lengths=src_lengths,
+            segment_size=self.segment_size,
+            extra_left_context=self.left_context,
+            extra_right_context=self.right_context,
+        )
+
+        seg_encoder_states_lengths: List[Tuple[Tensor, Tensor]] = []
+
+        for seg_src_tokens, seg_src_lengths in seg_src_tokens_lengths:
+            (seg_encoder_states, seg_enc_lengths, states) = self.module(
+                seg_src_tokens,
+                seg_src_lengths,
+                states=states,
+            )
+
+            seg_encoder_states_lengths.append((seg_encoder_states, seg_enc_lengths))
+
+        encoder_out, enc_lengths = segments_to_sequence(
+            segments=seg_encoder_states_lengths, time_axis=self.output_time_axis
+        )
+
+        encoder_padding_mask, _ = lengths_to_encoder_padding_mask(
+            enc_lengths, batch_first=True
+        )
+
+        if not encoder_padding_mask.any():
+            encoder_padding_mask = None
+
+        return {
+            "encoder_out": [encoder_out],
+            "encoder_padding_mask": [encoder_padding_mask],
+            "encoder_embedding": [],
+            "encoder_states": [states],
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+    def incremental_encode(
+        self,
+        seg_src_tokens: Tensor,
+        seg_src_lengths: Tensor,
+        states=None,
+    ):
+        """
+        Different from forward function, this function takes segmented speech
+        as input, and append encoder states to previous states
+        """
+        (seg_encoder_states, seg_enc_lengths, states) = self.module(
+            seg_src_tokens,
+            seg_src_lengths,
+            states=states,
+        )
+        return seg_encoder_states, seg_enc_lengths, states
 
 
 class ConvTransformerEncoder(FairseqEncoder):
@@ -162,10 +257,10 @@ class ConvTransformerEncoder(FairseqEncoder):
 
         subsampling_factor = int(max_seq_len * 1.0 / output_seq_len + 0.5)
         input_len_0 = (src_lengths.float() / subsampling_factor).ceil().long()
-        input_len_1 = x.size(0) * torch.ones([src_lengths.size(0)]).long().to(input_len_0.device)
-        input_lengths = torch.min(
-            input_len_0, input_len_1
+        input_len_1 = x.size(0) * torch.ones([src_lengths.size(0)]).long().to(
+            input_len_0.device
         )
+        input_lengths = torch.min(input_len_0, input_len_1)
 
         encoder_padding_mask = lengths_to_padding_mask(input_lengths)
 
@@ -180,7 +275,6 @@ class ConvTransformerEncoder(FairseqEncoder):
             maybe_encoder_padding_mask = None
         else:
             maybe_encoder_padding_mask = encoder_padding_mask
-
 
         return {
             "encoder_out": [x],
@@ -197,9 +291,11 @@ class ConvTransformerEncoder(FairseqEncoder):
     def reorder_encoder_out(self, encoder_out: Dict[str, List[Tensor]], new_order):
         """
         Reorder encoder output according to *new_order*.
+
         Args:
             encoder_out: output from the ``forward()`` method
             new_order (LongTensor): desired order
+
         Returns:
             *encoder_out* rearranged according to *new_order*
         """
@@ -267,8 +363,8 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
         bsz, max_seq_len, _ = src_tokens.size()
         x = (
             src_tokens.view(bsz, max_seq_len, self.in_channels, self.input_dim)
-                .transpose(1, 2)
-                .contiguous()
+            .transpose(1, 2)
+            .contiguous()
         )
         x = self.conv(x)
         bsz, _, output_seq_len, _ = x.size()
@@ -282,11 +378,14 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
         #     x.size(0) * src_lengths.new_ones([src_lengths.size(0)]).long(),
         # )
         input_lengths = x.size(0) * src_lengths.new_ones([src_lengths.size(0)]).long()
+
         encoder_padding_mask, _ = lengths_to_encoder_padding_mask(
             input_lengths, batch_first=True
         )
+
         # TODO: fix positional embedding
         positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
+
         x += positions
         x = F.dropout(x, p=self.dropout, training=self.training)
 
@@ -304,163 +403,17 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
             # TODO: Consider mask here
             x = layer(x, states[i])
             states[i]["encoder_states"] = x[
-                                          self.left_context_after_stride: -self.right_context_after_stride
-                                          ]
+                self.left_context_after_stride : -self.right_context_after_stride
+            ]
 
         lengths = (
             (
                 ~encoder_padding_mask[
-                 :, self.left_context_after_stride: -self.right_context_after_stride
-                 ]
+                    :, self.left_context_after_stride : -self.right_context_after_stride
+                ]
             )
-                .sum(dim=1, keepdim=True)
-                .long()
+            .sum(dim=1, keepdim=True)
+            .long()
         )
 
         return states[-1]["encoder_states"], lengths, states
-
-
-EncoderOut = NamedTuple(
-    "EncoderOut",
-    [
-        ("encoder_out", Tensor),  # T x B x C
-        ("encoder_padding_mask", Optional[Tensor]),  # B x T
-        ("encoder_embedding", Optional[Tensor]),  # B x T x C
-        ("encoder_states", Optional[List[Tensor]]),  # List[T x B x C]
-        ("src_tokens", Optional[Tensor]),  # B x T
-        ("src_lengths", Optional[Tensor]),  # B x 1
-    ],
-)
-
-
-class SequenceEncoder(FairseqEncoder):
-    """
-    SequenceEncoder encodes sequences.
-    More specifically, `src_tokens` and `src_lengths` in `forward()` should
-    describe a batch of "complete" sequences rather than segments.
-    Segment-by-segment inference can be triggered by `segment_size`:
-    1) `segment_size` is None:
-        SequenceEncoder treats the input sequence as one single segment.
-    2) `segment_size` is not None (some int instead):
-        SequenceEncoder does the following:
-            1. breaks the input sequence into several segments
-            2. inference on each segment and collect the outputs
-            3. concatanete segment outputs into the output sequence.
-    Note that `segment_size` here shouldn't include additional left/right
-    contexts needed, for example if we wish to infer with LC-BLSTM where the
-    middle chunk size is 100 and right context is 20, `segment_size` should be
-    100.
-    """
-
-    def __init__(self, args, module):
-        super().__init__(None)
-
-        self.module = module
-        self.input_time_axis = 1
-        self.output_time_axis = 0
-        self.segment_size = args.segment_size
-        self.left_context = args.left_context
-        self.right_context = args.right_context
-
-    def forward(
-            self,
-            src_tokens: Tensor,
-            src_lengths: Tensor,
-            states=None,
-    ):
-
-        seg_src_tokens_lengths = sequence_to_segments(
-            sequence=src_tokens,
-            time_axis=self.input_time_axis,
-            lengths=src_lengths,
-            segment_size=self.segment_size,
-            extra_left_context=self.left_context,
-            extra_right_context=self.right_context,
-        )
-
-        seg_encoder_states_lengths: List[Tuple[Tensor, Tensor]] = []
-
-        for seg_src_tokens, seg_src_lengths in seg_src_tokens_lengths:
-            (seg_encoder_states, seg_enc_lengths, states) = self.module(
-                seg_src_tokens,
-                seg_src_lengths,
-                states=states,
-            )
-
-            seg_encoder_states_lengths.append((seg_encoder_states, seg_enc_lengths))
-
-        encoder_out, enc_lengths = segments_to_sequence(
-            segments=seg_encoder_states_lengths, time_axis=self.output_time_axis
-        )
-
-        encoder_padding_mask, _ = lengths_to_encoder_padding_mask(
-            enc_lengths, batch_first=True
-        )
-
-        if not encoder_padding_mask.any():
-            encoder_padding_mask = None
-
-        return {
-            "encoder_out": [encoder_out],
-            "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_embedding": [],
-            "encoder_states": [states],
-            "src_tokens": [],
-            "src_lengths": [],
-        }
-
-    def incremental_encode(
-            self,
-            seg_src_tokens: Tensor,
-            seg_src_lengths: Tensor,
-            states=None,
-    ):
-        """
-        Different from forward function, this function takes segmented speech
-        as input, and append encoder states to previous states
-        """
-        (seg_encoder_states, seg_enc_lengths, states) = self.module(
-            seg_src_tokens,
-            seg_src_lengths,
-            states=states,
-        )
-        return seg_encoder_states, seg_enc_lengths, states
-
-    @torch.jit.export
-    def reorder_encoder_out(self, encoder_out, new_order):
-        """
-        Reorder encoder output according to *new_order*.
-        Args:
-            encoder_out: output from the ``forward()`` method
-            new_order (LongTensor): desired order
-        Returns:
-            *encoder_out* rearranged according to *new_order*
-        """
-        new_encoder_out = [encoder_out["encoder_out"][0].index_select(1, new_order)]
-        if len(encoder_out["encoder_padding_mask"]) == 0 or \
-                encoder_out["encoder_padding_mask"][0] is None:
-            new_encoder_padding_mask = []
-        else:
-            new_encoder_padding_mask = [
-                (encoder_out["encoder_padding_mask"][0]).index_select(0, new_order)
-            ]
-        if len(encoder_out["encoder_embedding"]) == 0:
-            new_encoder_embedding = []
-        else:
-            new_encoder_embedding = [
-                (encoder_out["encoder_embedding"][0]).index_select(0, new_order)
-            ]
-        encoder_states = encoder_out["encoder_states"][0]
-        if len(encoder_states) > 0:
-            for idx, state in enumerate(encoder_states):
-                encoder_states[idx] = {"memory_banks": [s.index_select(1, new_order) for s in state["memory_banks"]],
-                                       "encoder_states": state["encoder_states"].index_select(1, new_order)}
-
-        return {
-            "encoder_out": new_encoder_out,
-            "encoder_padding_mask": new_encoder_padding_mask,
-            "encoder_embedding": new_encoder_embedding,
-            "encoder_states": [encoder_states],
-            "src_tokens": [],
-            "src_lengths": [],
-        }

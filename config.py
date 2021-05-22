@@ -1,3 +1,6 @@
+import data
+import os
+
 class Params:
     num_features: int = 80
     min_time_stretch: float = 0.9
@@ -5,10 +8,12 @@ class Params:
     sample_rate: int = 16000
     min_shift: int = -3
     max_shift: int = 3
-    dataset: str = "LJ"
     vocab_size: int = 1000
     time_masking: int = 1
-    bpe_model: str = f"vocabulary_LS_{vocab_size}.model" if dataset == "LS" else f"vocabulary_LJ_{vocab_size}.model"
+    warmup_steps: int = 8000
+    data_root: str = os.path.dirname(os.path.abspath(str(data.__file__)))
+    dataset_path: str = os.path.join(data_root, "LJSpeech-1.1")
+    bpe_model: str = f"vocabulary_LJ_{vocab_size}.model"
     noise_variance: float = 0.01
     batch_size: int = 16
     num_workers: int = 8
@@ -23,7 +28,6 @@ class Params:
     segment_size: int = 100
     left_context: int = 32
     right_context: int = 32
-    data: str = "/data/aotabisheva/data"
     config_yaml: str = "config.yaml"
     max_memory_size: int = -1
     simul_type: str = "waitk_fixed_pre_decision"
@@ -37,7 +41,7 @@ class Params:
     dropout: float = 0.25
     seed: int = 221
     linear_attention: bool = True
-
+    model_name = f"left{left_context}_right{right_context}_segment{segment_size}_epoch{start_epoch}_vocab_size{vocab_size}_linear{linear_attention}.pth"
 
 class MelSpectrogramConfig:
     sr: int = 16000
